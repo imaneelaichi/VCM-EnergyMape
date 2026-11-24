@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-#from torchac.torchac import ac
+import ac_compat as ac
 from functional import lower_bound, quantize
 
 __version__ = '1.0.0'
@@ -181,7 +181,19 @@ class EntropyModel(nn.Module):
         cdf, cdf_length, offset, idx = self.get_cdf(input.size())  # CxL
         assert symbols.dtype == cdf.dtype == cdf_length.dtype == offset.dtype == idx.dtype == ac.dtype
 
-        strings = ac.range_index_encode(symbols - offset, cdf, cdf_length, idx)
+        # Correction A : clamp explicite, meme borne que ac_compat (hi = cdf_length - 1)
+        sym_rel = symbols - offset
+        lens = cdf_length.reshape(-1).long()[idx.long().expand(sym_rel.shape)]
+        hi = (lens - 1).to(sym_rel.dtype)
+        sym_clamped = torch.minimum(sym_rel.clamp_min(0), hi)
+        self.last_n_clamped = int((sym_clamped != sym_rel).sum())
+        self.last_n_symbols = sym_rel.numel()
+        if self.last_n_clamped:
+            import warnings
+            warnings.warn(f"bottleneck: {self.last_n_clamped}/{self.last_n_symbols} symboles clampes")
+        symbols = sym_clamped + offset
+
+        strings = ac.range_index_encode(sym_clamped, cdf, cdf_length, idx)
 
         if return_sym:
             return strings, self.dequantize(symbols, self.mean)

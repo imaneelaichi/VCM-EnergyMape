@@ -1,0 +1,104 @@
+# =====================================================================================
+# experiment_config_v51.yaml -- VCM-EnergyMap, expérience 3 (V5.1 = V5 configuration + V4.1 profilage énergétique)
+# Tout paramètre expérimental se change ICI, jamais dans les scripts Python.
+# A placer dans svc_code\ (à côté de experiment3_frame_components_v51.py, exp_config_v51.py, energy_profiling_v51.py).
+#
+# Principe : `defaults` s'applique à toutes les expériences ; chaque entrée de `experiments`
+# ne redéfinit que ce qui change (fusion récursive). AUCUNE combinaison n'est générée
+# automatiquement : seules les expériences listées explicitement ci-dessous existent.
+# Rien n'est lancé sans une action explicite (--run / --batch) ; sans action, le script VALIDE seulement.
+# =====================================================================================
+schema_version: 1
+
+paths:
+  results_root: results/VCM_EnergyMap          # relatif à svc_code
+  results_group: exp3_v51                      # sous-dossier de toutes les expériences V5.1 (V3, V4, V4.1, V5 jamais touchés)
+  checkpoints_dir: checkpoints/base
+  checkpoint_file_pattern: "checkpoint_{checkpoint}.pth.tar"   # base_1 -> checkpoint_base_1.pth.tar
+  inputs_cache: inputs_cache                   # images redimensionnées (créées au besoin, jamais écrasées)
+
+# Valeurs autorisées (garde-fou contre les fautes de frappe). Elargissez cette liste pour de nouvelles valeurs.
+allowed:
+  gop: [2, 4, 8, 16, 32]                       # 32 = protocole V4 déjà exécuté
+  resolution: ["768x432", "640x360", "384x216"]
+  checkpoint: [base_1, base_2, base_3, base_4]
+
+defaults:
+  video:
+    name: videos_5                             # apparaît dans le nom du dossier de résultats
+    frames_dir: videos_5/input_png             # images sources (PNG) ; relatif à svc_code
+    prefix: "frame_"                           # fichiers : frame_001.png, frame_002.png, ...
+    start_index: 1
+    fps: null                                  # cadence RÉELLE de la vidéo (images/s) pour les bit/s. null = 30 SUPPOSÉ, signalé
+                                               # partout (fps_assumed=True, avertissement) ; les bpp n'en dépendent pas.
+  frames:
+    count: 10                                  # nombre d'images mesurées (la 1re est une image I)
+  repeats: 10                                  # passes complètes indépendantes
+  gop: 4
+  resolution: "768x432"
+  checkpoint: base_1                           # NE PAS supposer un "niveau de qualité" : voir checkpoint_report.json
+
+  codec:
+    closed_gop: false
+    threads: 2
+    warmup_frames: 2
+
+  # Redimensionnement des images sources vers la résolution demandée (prétraitement des ENTRÉES uniquement ;
+  # le codec n'est pas modifié). Si la source a déjà la résolution cible, elle est utilisée telle quelle.
+  resize:
+    method: lanczos                            # nearest | bilinear | bicubic | lanczos
+    allow_upscale: false
+    allow_aspect_change: false
+
+  # Paramètres du détecteur : DOIVENT être identiques entre expériences (vérifié en batch, hash enregistré).
+  # L'expérience 3 ne lance pas de détection : ces valeurs sont validées, tracées dans metadata.json et écrites
+  # dans detector_params.json pour les scripts de détection. REMPLACEZ-les par celles de vos expériences de détection.
+  detector:
+    name: yolo
+    weights: null                              # chemin du fichier de poids (vérifié + SHA-256 si renseigné)
+    conf_threshold: 0.25
+    iou_threshold: 0.45
+    imgsz: null
+    classes: null
+    device: cpu
+
+  energy:
+    country_iso_code: MAR
+    tracking_mode: machine
+    measure_power_secs: 1.0
+    idle_seconds: 30.0                         # baseline initiale (>= 10 x measure_power_secs)
+    idle_between_seconds: 15.0                 # baseline avant chaque répétition suivante (0 = désactivée)
+    cooldown_seconds: 30.0
+    expected_channel: RAPL_Package0_PKG        # canal Package attendu dans l'instance WindowsEMI
+    require_confirmed_rapl: true               # false = continuer même si RAPL non confirmé (énergie alors étiquetée non confirmée)
+    # La DRAM n'est volontairement PAS configurable (rapl_include_dram=False) : l'inclure double-compterait la RAM.
+
+  measurement:
+    profiler_coverage_min: 0.90
+    profiler_coverage_max: 1.001
+
+  validation:
+    probe_frames: 2                            # --probe : images réellement encodées/décodées (hors énergie), coût ≈ 1 passe par image.
+                                               # 2 = image I puis P. Mettre GOP+1 pour voir aussi le RETOUR d'une image I
+                                               # (ex. 3 avec GOP=2). Au-delà, la structure est de toute façon contrôlée
+                                               # image par image pendant la mesure (arrêt si incohérente).
+  estimate:                                    # durées par image (s) du pilote V2 à la résolution de référence
+    reference_resolution: "768x432"
+    scale_with_pixels: true                    # estimation grossière : durée proportionnelle au nombre de pixels
+    enc_I_s: 66.1
+    enc_P_s: 43.9
+    dec_I_s: 74.7
+    dec_P_s: 33.1
+  limits:
+    max_hours_per_config: 4.0
+
+batch:
+  stop_on_failure: true
+  cooldown_between_configs_s: 60               # pause thermique entre deux configurations
+
+# Expériences EXPLICITES (aucun produit cartésien). `id` unique ; `enabled: false` pour la désactiver.
+experiments:
+  - {id: C1, gop: 4, resolution: "768x432", checkpoint: base_1}
+  - {id: C2, gop: 4, resolution: "768x432", checkpoint: base_2}
+  - {id: C3, gop: 4, resolution: "640x360", checkpoint: base_1}
+  - {id: C4, gop: 8, resolution: "768x432", checkpoint: base_1}

@@ -30,8 +30,10 @@ import copy
 from models.common import DetectMultiBackend
 from utils.torch_utils import select_device, smart_inference_mode
 from loss import MS_SSIM, PSNR
-from Model.Model import Model
 from util.sampler import Resampler
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Périphérique utilisé :", device)
 #=======================================================================================================================
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
@@ -39,6 +41,7 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 #=======================================================================================================================
+
 class AverageMeter:
     """Compute running average."""
 
@@ -94,28 +97,28 @@ class CompressModel(nn.Module):#nn.Module
 class Pframe(CompressModel):
     def __init__(self, mo_coder, cond_mo_coder, res_coder):
         super(Pframe, self).__init__()
-        self.criterion = nn.MSELoss(reduction='none').cuda()
+        self.criterion = nn.MSELoss(reduction='none').to(device)
 
         self.if_model = AugmentedNormalizedFlowHyperPriorCoder(128, 320, 192, num_layers=2, use_QE=True,
                                                                use_affine=False,
                                                                use_context=True, condition='GaussianMixtureModel',
-                                                               quant_mode='round').cuda()
-        self.MENet = PWCNet(trainable=True).cuda()
+                                                               quant_mode='round').to(device)
+        self.MENet = PWCNet(trainable=True).to(device)
 
-        self.MWNet = MotionExtrapolationNet(sequence_length=3).cuda()
+        self.MWNet = MotionExtrapolationNet(sequence_length=3).to(device)
         self.MWNet.__delattr__('flownet')
 
-        self.Motion = mo_coder.cuda()
-        self.CondMotion = cond_mo_coder.cuda()
+        self.Motion = mo_coder.to(device)
+        self.CondMotion = cond_mo_coder.to(device)
 
-        self.Resampler = Resampler().cuda()
-        self.MCNet = Refinement(6, 64, out_channels=3).cuda()
+        self.Resampler = Resampler().to(device)
+        self.MCNet = Refinement(6, 64, out_channels=3).to(device)
 
-        self.Residual = res_coder.cuda()
+        self.Residual = res_coder.to(device)
 
         self.frame_buffer = list()
         self.flow_buffer = list()
-        self.align = Alignment().cuda()
+        self.align = Alignment().to(device)
 
     def motion_forward(self, ref_frame, coding_frame, p_order=1):
         # To generate extrapolated motion for conditional motion coding or not
@@ -166,36 +169,54 @@ class Pframe(CompressModel):
 
     @torch.no_grad()
     def test(self, no_frames, inp_path, prefix, out_path, gop):
-        align = Alignment().cuda()
+        align = Alignment().to(device)
+
         RATE = AverageMeter()
         MSE = AverageMeter()
         SSIM = AverageMeter()
-        ms_ssim = MS_SSIM(reduction='mean', data_range=1.).to('cuda')
-        for idx in tqdm(range(0,no_frames)):
-            filename = '%s/%s%03d.png' % (inp_path, prefix, idx)
-            coding_frame = ToTensor()(Image.open(filename)).unsqueeze(0).cuda()
 
-            if idx%gop==0: # I-frames
-                rec_frame, likelihoods, _ = self.if_model(align.align(coding_frame))
-                rec_frame = align.resume(rec_frame.cuda()).clamp(0, 1)
+        ms_ssim = MS_SSIM(reduction='mean', data_range=1.).to(device)
+
+        for idx in tqdm(range(1, no_frames + 1)):
+            filename = '%s/%s%03d.png' % (inp_path, prefix, idx)
+
+            coding_frame = ToTensor()(
+                Image.open(filename).convert('RGB')
+            ).unsqueeze(0).to(device)
+
+            if (idx - 1) % gop == 0:  # I-frames
+                rec_frame, likelihoods, _ = self.if_model(
+                    align.align(coding_frame)
+                )
+
+                rec_frame = align.resume(rec_frame).clamp(0, 1)
+
                 mse = self.criterion(rec_frame, coding_frame).mean().item()
                 MSE.update(mse)
+
                 eval_msssim = ms_ssim(rec_frame, coding_frame).mean().item()
                 SSIM.update(eval_msssim)
+
                 rate = estimate_bpp(likelihoods, input=rec_frame).mean().item()
                 RATE.update(rate)
+
                 frame_idx = 1
-            else: #P-frames
+
+            else:  # P-frames
                 if frame_idx == 1:
                     self.frame_buffer = [align.align(ref_frame)]
 
-                rec_frame, likelihoods = self.forward_pair(align.align(ref_frame), align.align(coding_frame), frame_idx)
+                rec_frame, likelihoods = self.forward_pair(
+                    align.align(ref_frame),
+                    align.align(coding_frame),
+                    frame_idx
+                )
 
                 rec_frame = rec_frame.clamp(0, 1)
                 self.frame_buffer.append(rec_frame)
 
-                # Back to original resolution
                 rec_frame = align.resume(rec_frame)
+
                 rate = estimate_bpp(likelihoods, input=coding_frame).mean().item()
                 RATE.update(rate)
 
@@ -205,9 +226,8 @@ class Pframe(CompressModel):
                 eval_msssim = ms_ssim(rec_frame, coding_frame).mean().item()
                 SSIM.update(eval_msssim)
 
-                frame_idx = frame_idx + 1
+                frame_idx += 1
 
-            # Update frame buffer
             if len(self.frame_buffer) == 4:
                 self.frame_buffer.pop(0)
                 assert len(self.frame_buffer) == 3, str(len(self.frame_buffer))
@@ -220,7 +240,81 @@ class Pframe(CompressModel):
         m = MSE.avg
         r = RATE.avg
         s = SSIM.avg
+
         return m, s, r
+
+@torch.no_grad()
+def test(self, no_frames, inp_path, prefix, out_path, gop):
+    align = Alignment().to(device)
+
+    RATE = AverageMeter()
+    MSE = AverageMeter()
+    SSIM = AverageMeter()
+
+    ms_ssim = MS_SSIM(reduction='mean', data_range=1.).to(device)
+
+    for idx in tqdm(range(1, no_frames + 1)):
+        filename = '%s/%s%03d.png' % (inp_path, prefix, idx)
+
+        coding_frame = ToTensor()(
+            Image.open(filename).convert('RGB')
+        ).unsqueeze(0).to(device)
+
+        if (idx - 1) % gop == 0:  # I-frames
+            rec_frame, likelihoods, _ = self.if_model(align.align(coding_frame))
+            rec_frame = align.resume(rec_frame).clamp(0, 1)
+
+            mse = self.criterion(rec_frame, coding_frame).mean().item()
+            MSE.update(mse)
+
+            eval_msssim = ms_ssim(rec_frame, coding_frame).mean().item()
+            SSIM.update(eval_msssim)
+
+            rate = estimate_bpp(likelihoods, input=rec_frame).mean().item()
+            RATE.update(rate)
+
+            frame_idx = 1
+
+        else:  # P-frames
+            if frame_idx == 1:
+                self.frame_buffer = [align.align(ref_frame)]
+
+            rec_frame, likelihoods = self.forward_pair(
+                align.align(ref_frame),
+                align.align(coding_frame),
+                frame_idx
+            )
+
+            rec_frame = rec_frame.clamp(0, 1)
+            self.frame_buffer.append(rec_frame)
+
+            rec_frame = align.resume(rec_frame)
+
+            rate = estimate_bpp(likelihoods, input=coding_frame).mean().item()
+            RATE.update(rate)
+
+            mse = self.criterion(rec_frame, coding_frame).mean().item()
+            MSE.update(mse)
+
+            eval_msssim = ms_ssim(rec_frame, coding_frame).mean().item()
+            SSIM.update(eval_msssim)
+
+            frame_idx += 1
+
+        if len(self.frame_buffer) == 4:
+            self.frame_buffer.pop(0)
+            assert len(self.frame_buffer) == 3, str(len(self.frame_buffer))
+
+        img = torch2img(rec_frame.detach().cpu())
+        img.save('%s/%s%03d.png' % (out_path, prefix, idx))
+
+        ref_frame = rec_frame
+
+    m = MSE.avg
+    r = RATE.avg
+    s = SSIM.avg
+
+    return m, s, r
 #=======================================================================================================================
 @torch.no_grad()
 def encode_the_base_layer(base_checkpoint, no_frames, inp_path, prefix, out_path, gop):
@@ -241,21 +335,31 @@ def encode_the_base_layer(base_checkpoint, no_frames, inp_path, prefix, out_path
     res_coder_arch = __CODER_TYPES__[res_coder_cfg['model_architecture']]
     res_coder = res_coder_arch(**res_coder_cfg['model_params'])
 
-    net = Pframe(mo_coder, cond_mo_coder, res_coder).cuda()
-    net = torch.nn.DataParallel(net)
+    net = Pframe(mo_coder, cond_mo_coder, res_coder).to(device)
 
-    device = select_device('', batch_size=1)
+    yolo_model = DetectMultiBackend(
+        weights=ROOT / 'yolov5s.pt',
+        device=device,
+        dnn=False,
+        data=ROOT / 'data/hevc_class_b_coded.yaml',
+        fp16=False
+    )
 
-    yolo_model = DetectMultiBackend(weights=ROOT/'yolov5s.pt', device=device, dnn=False, data=ROOT/'data/hevc_class_b_coded.yaml', fp16=False)
-    net.module.feature_extractor = copy.deepcopy(yolo_model)
+    net.feature_extractor = copy.deepcopy(yolo_model)
 
-    checkpoint_net = torch.load(base_checkpoint, map_location=(lambda storage, loc: storage))
-    net.load_state_dict(checkpoint_net['state_dict'], strict=True)
-    net = net.cuda()
+    checkpoint_net = torch.load(base_checkpoint, map_location=device)
+
+# Supprimer le préfixe "module." ajouté par DataParallel
+    state_dict = checkpoint_net['state_dict']
+    state_dict = {
+        key.replace('module.', '', 1) if key.startswith('module.') else key: value
+        for key, value in state_dict.items()
+    }
+
+    net.load_state_dict(state_dict, strict=True)
     net.eval()
-
     print("Generating the base frames...")
-    m, s, r = net.module.test(no_frames, inp_path, prefix, out_path, gop)
+    m, s, r = net.test(no_frames, inp_path, prefix, out_path, gop)
     psnr = 10*log10(1/m)
     print("BPP: ", r, " PSNR: ", psnr, " SSIM: ", s)
 

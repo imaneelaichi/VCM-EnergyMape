@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+import ac_compat as ac
 from torch import nn
 from tqdm import tqdm
 

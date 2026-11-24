@@ -1,0 +1,51 @@
+# =====================================================================================
+# experiment_config_v52.yaml -- VCM-EnergyMap V5.2, module énergétique (étape 1).
+# Lu UNIQUEMENT par exp_config_v52.py (aucun lien avec exp_config_v51 / experiment_config_v51.yaml).
+# Les valeurs numériques ci-dessous sont des PROPOSITIONS de contrôle, à ajuster ; ce ne sont pas des vérités universelles.
+# Aucune clé inconnue n'est tolérée (garde-fou contre les fautes de frappe).
+# =====================================================================================
+schema_version: 52
+
+paths:
+  results_root: results/VCM_EnergyMap      # relatif au dossier du projet (svc_code)
+  results_group: exp3_v52                  # DOIT valoir exp3_v52 : les résultats V5.1 (exp3_v51) ne sont jamais touchés
+
+energy:
+  country_iso_code: MAR
+  tracking_mode: machine
+  expected_channel: RAPL_Package0_PKG      # canal Package attendu ; vérifié, jamais supposé
+  require_confirmed_rapl: true             # true : l'expérience s'arrêtera si le CPU n'est pas confirmé RAPL
+  rapl_include_dram: false                 # DOIT rester false (inclure la DRAM double-compterait la RAM modélisée)
+
+  sampling:
+    measure_power_secs: 1.0                # période d'échantillonnage demandée à CodeCarbon
+    min_window_periods: 10                 # fenêtre minimale = min_window_periods x measure_power_secs
+
+  idle:
+    before_seconds: 30.0                   # idle avant chaque bloc (>= fenêtre minimale)
+    after_seconds: 30.0                    # idle après chaque bloc
+    cooldown_seconds: 30.0                 # pause avant le premier idle
+    min_records: 2                         # nombre minimal de mesures idle pour une baseline avec incertitude
+    cv_max: 0.10                           # critère de contrôle (CV des puissances idle)
+    drift_max_rel: 0.10                    # critère de contrôle (dérive relative idle avant/après)
+
+  checks:
+    duration_tolerance_pct: 2.0            # écart toléré entre la fenêtre du backend et la durée réelle
+    load_idle_ratio:
+      enabled: true                        # critère de CONTRÔLE configurable ; les valeurs réelles sont toujours enregistrées
+      min_ratio: 1.2
+      severity: warn                       # info | warn | fail
+
+  uncertainty:
+    significance_k: 2.0                    # un net est "significatif" si |net| > k x u_net
+    boundary:
+      enabled: true
+      half_width_periods: 1.0              # demi-largeur de l'incertitude de bord, en périodes d'échantillonnage (hypothèse de modèle)
+
+  loop:                                    # phases courtes (ex. YOLO) mesurées par boucle
+    min_seconds: 20.0                      # >= min_window_periods x measure_power_secs (vérifié)
+    min_iterations: 1
+    warmup_iterations: 2
+
+  raw_log:
+    enabled: true                          # journal JSONL des enregistrements bruts aux bornes des tâches
